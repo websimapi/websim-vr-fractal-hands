@@ -15,7 +15,7 @@ let controllerGrip1, controllerGrip2;
 let controls;
 
 // Simulation Variables
-const WIDTH = 384; // ~147k particles for denser fluid
+const WIDTH = 160; // ~25k particles for better performance
 let gpuCompute;
 let velocityVariable, positionVariable;
 let particleUniforms;
@@ -55,7 +55,7 @@ function init() {
 
     // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: false }); // False for performance with particles
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // Cap pixel ratio for performance
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
     container.appendChild(renderer.domElement);

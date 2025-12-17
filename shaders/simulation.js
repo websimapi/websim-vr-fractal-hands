@@ -39,8 +39,8 @@ void main() {
     vec4 mvPosition = modelViewMatrix * vec4( pos, 1.0 );
     gl_Position = projectionMatrix * mvPosition;
     
-    // Size attenuation - slightly larger for the "glob" effect
-    gl_PointSize = ( 0.3 / -mvPosition.z ) * 500.0;
+    // Size attenuation - larger for lower particle count
+    gl_PointSize = ( 0.6 / -mvPosition.z ) * 500.0;
 }
 `;
 
@@ -186,8 +186,8 @@ void main() {
     float freq = 0.3;
     float amp = 0.5;
     
-    // 3 Octaves of Curl Noise
-    for(int i = 0; i < 3; i++) {
+    // 2 Octaves of Curl Noise (Reduced for performance)
+    for(int i = 0; i < 2; i++) {
         noise += curlNoise(pos * freq + uTime * 0.1) * amp;
         freq *= 2.0;
         amp *= 0.5;
