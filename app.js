@@ -15,7 +15,7 @@ let controllerGrip1, controllerGrip2;
 let controls;
 
 // Simulation Variables
-const WIDTH = 256; // 65536 particles
+const WIDTH = 384; // ~147k particles for denser fluid
 let gpuCompute;
 let velocityVariable, positionVariable;
 let particleUniforms;
@@ -136,10 +136,14 @@ function fillTexture(texturePosition, textureVelocity) {
     const velArray = textureVelocity.image.data;
 
     for (let k = 0, kl = posArray.length; k < kl; k += 4) {
-        // Random positions in a box
-        posArray[k + 0] = (Math.random() * 4 - 2);
-        posArray[k + 1] = (Math.random() * 4 - 2) + 1.6; // Centered at head height
-        posArray[k + 2] = (Math.random() * 4 - 2);
+        // Random positions in a sphere
+        const r = Math.random() * 1.5;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        
+        posArray[k + 0] = r * Math.sin(phi) * Math.cos(theta);
+        posArray[k + 1] = r * Math.sin(phi) * Math.sin(theta) + 1.6; // Centered at head height
+        posArray[k + 2] = r * Math.cos(phi);
         posArray[k + 3] = 1;
 
         velArray[k + 0] = 0;

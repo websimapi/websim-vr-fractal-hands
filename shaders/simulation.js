@@ -4,50 +4,77 @@ uniform sampler2D textureVelocity;
 attribute vec2 reference;
 varying vec3 vVelocity;
 varying vec4 vColor;
+varying vec3 vPos;
 uniform float uTime;
+
+// Cosine based palette, 4 vec3 params
+vec3 palette( in float t, in vec3 a, in vec3 b, in vec3 c, in vec3 d ) {
+    return a + b*cos( 6.28318*(c*t+d) );
+}
 
 void main() {
     vec4 posTemp = texture2D( texturePosition, reference );
     vec3 pos = posTemp.xyz;
+    vPos = pos; // Pass to fragment
+    
     vec4 velTemp = texture2D( textureVelocity, reference );
     vVelocity = velTemp.xyz;
 
-    // Color based on velocity and position (Trippy effects)
+    // Fractal Color Palette
+    // Rainbow-ish neon palette
+    vec3 a = vec3(0.5, 0.5, 0.5);
+    vec3 b = vec3(0.5, 0.5, 0.5);
+    vec3 c = vec3(1.0, 1.0, 1.0);
+    vec3 d = vec3(0.263, 0.416, 0.557);
+    
+    float t = length(pos) * 0.2 - uTime * 0.1;
+    vec3 finalColor = palette(t, a, b, c, d);
+    
+    // Highlight fast moving particles
     float speed = length(vVelocity);
-    vec3 colA = vec3(0.1, 0.4, 1.0); // Blue
-    vec3 colB = vec3(1.0, 0.2, 0.5); // Pinkish
-    
-    // Mix based on speed
-    vec3 finalColor = mix(colA, colB, smoothstep(0.0, 1.0, speed * 2.0));
-    
-    // Add time-based hue shift
-    float hueShift = sin(uTime * 0.5 + pos.x * 0.2) * 0.1;
-    finalColor += hueShift;
+    finalColor += vec3(0.2, 0.8, 1.0) * smoothstep(0.5, 2.0, speed);
 
     vColor = vec4(finalColor, 1.0);
 
     vec4 mvPosition = modelViewMatrix * vec4( pos, 1.0 );
     gl_Position = projectionMatrix * mvPosition;
     
-    // Size attenuation
-    gl_PointSize = ( 0.15 / -mvPosition.z ) * 500.0;
+    // Size attenuation - slightly larger for the "glob" effect
+    gl_PointSize = ( 0.3 / -mvPosition.z ) * 500.0;
 }
 `;
 
 export const renderFragmentShader = `
 varying vec3 vVelocity;
 varying vec4 vColor;
+varying vec3 vPos;
 
 void main() {
-    // Soft circular particle
-    vec2 coord = gl_PointCoord - vec2(0.5);
-    float dist = length(coord);
-    if (dist > 0.5) discard;
+    // Transform gl_PointCoord from [0,1] to [-1,1]
+    vec2 coord = gl_PointCoord * 2.0 - 1.0;
+    float r = dot(coord, coord);
+    if (r > 1.0) discard;
+
+    // Calculate fake Z for sphere look
+    float z = sqrt(1.0 - r);
+    vec3 N = vec3(coord.x, coord.y, z); // Normal
     
-    // Soft glow
-    float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+    // Simple Lighting
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 1.0));
+    float diff = max(dot(N, lightDir), 0.0);
     
-    gl_FragColor = vec4(vColor.rgb, alpha * 0.8);
+    // Specular
+    vec3 viewDir = vec3(0.0, 0.0, 1.0);
+    vec3 reflectDir = reflect(-lightDir, N);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
+    
+    vec3 finalColor = vColor.rgb * (diff * 0.6 + 0.4) + vec3(1.0) * spec * 0.5;
+    
+    // Rim lighting (Fresnel)
+    float rim = 1.0 - max(dot(vec3(0.0, 0.0, 1.0), N), 0.0);
+    finalColor += vColor.rgb * pow(rim, 3.0) * 0.5;
+
+    gl_FragColor = vec4(finalColor, 1.0);
 }
 `;
 
@@ -154,12 +181,23 @@ void main() {
     vec3 pos = texture2D( texturePosition, uv ).xyz;
     vec3 vel = texture2D( textureVelocity, uv ).xyz;
 
-    // Base fluid flow (Curl Noise)
-    vec3 noise = curlNoise(pos * 0.4 + uTime * 0.05); // Low freq noise
-    vel += noise * 0.5 * delta; // Add noise force
+    // Fractal Curl Noise (FBM)
+    vec3 noise = vec3(0.0);
+    float freq = 0.3;
+    float amp = 0.5;
+    
+    // 3 Octaves of Curl Noise
+    for(int i = 0; i < 3; i++) {
+        noise += curlNoise(pos * freq + uTime * 0.1) * amp;
+        freq *= 2.0;
+        amp *= 0.5;
+    }
+    
+    // Apply noise force
+    vel += noise * 0.8 * delta;
 
-    // Drag / Damping
-    vel *= 0.98; 
+    // Damping
+    vel *= 0.96; 
 
     // Interact with Hand 1
     if (uHandActive1 > 0.5) {
