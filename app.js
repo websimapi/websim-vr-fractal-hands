@@ -193,30 +193,6 @@ function initParticles() {
     scene.add(particles);
 }
 
-    // Setup Audio
-    setupAudio();
-
-    // Controllers & Hands
-    setupXR();
-
-    // Resize Listener
-    window.addEventListener('resize', onWindowResize);
-    
-    // Start Overlay
-    document.getElementById('start-btn').addEventListener('click', () => {
-        document.getElementById('overlay').style.opacity = 0;
-        setTimeout(() => {
-            document.getElementById('overlay').style.display = 'none';
-        }, 1000);
-        
-        // Init Audio on user gesture
-        if(audioContext && audioContext.state === 'suspended') {
-            audioContext.resume();
-        }
-        playAudio();
-    });
-}
-
 function setupXR() {
     // Controllers
     controller1 = renderer.xr.getController(0);
@@ -278,7 +254,6 @@ function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-    uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 }
 
 function updateHandData(delta) {

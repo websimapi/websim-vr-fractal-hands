@@ -123,22 +123,18 @@ float snoise(vec3 v) {
   vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
   vec3 p0 = vec3(a0.xy,h.x);
   vec3 p1 = vec3(a1.zw,h.y);
-  vec3 p2 = vec3(a2.xy,h.z); // Wait, typo in original logic? No, let's fix variables
-  vec3 p2_fixed = vec3(a1.xy,h.z);
+  vec3 p2 = vec3(a0.zw,h.z);
   vec3 p3 = vec3(a1.zw,h.w);
   
-  // Re-verify p2 logic from standard implementation
-  // p2 is from a1.xy and h.z
-  
-  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2_fixed, p2_fixed), dot(p3,p3)));
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
   p0 *= norm.x;
   p1 *= norm.y;
-  p2_fixed *= norm.z;
+  p2 *= norm.z;
   p3 *= norm.w;
   
   vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
   m = m * m;
-  return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2_fixed,x2), dot(p3,x3) ) );
+  return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
 }
 
 vec3 curlNoise(vec3 p) {
