@@ -3,7 +3,8 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { vertexShader, fragmentShader } from './shaders/fractal.js';
+import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+import { renderVertexShader, renderFragmentShader, computeShaderPosition, computeShaderVelocity } from './shaders/simulation.js';
 
 let container;
 let camera, scene, renderer;
@@ -13,15 +14,23 @@ let controllerGrip1, controllerGrip2;
 
 let controls;
 
-// Shader Uniforms
-const uniforms = {
-    uTime: { value: 0 },
-    uCameraPos: { value: new THREE.Vector3() },
-    uHandPos1: { value: new THREE.Vector3(100, 100, 100) }, // Default off-screen
-    uHandPos2: { value: new THREE.Vector3(100, 100, 100) },
-    uHandActive1: { value: 0 },
-    uHandActive2: { value: 0 },
-    uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+// Simulation Variables
+const WIDTH = 256; // 65536 particles
+let gpuCompute;
+let velocityVariable, positionVariable;
+let particleUniforms;
+let lastTime = 0;
+
+// Hand Tracking Data
+const handData = {
+    pos1: new THREE.Vector3(100, 100, 100),
+    pos2: new THREE.Vector3(100, 100, 100),
+    vel1: new THREE.Vector3(),
+    vel2: new THREE.Vector3(),
+    lastPos1: new THREE.Vector3(100, 100, 100),
+    lastPos2: new THREE.Vector3(100, 100, 100),
+    active1: 0,
+    active2: 0
 };
 
 let audioContext;
@@ -38,13 +47,14 @@ function init() {
     // Scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
+    // scene.fog = new THREE.Fog(0x000000, 1, 10);
 
     // Camera
     camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 50);
-    camera.position.set(0, 1.6, 3);
+    camera.position.set(0, 1.6, 2.5);
 
     // Renderer
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer = new THREE.WebGLRenderer({ antialias: false }); // False for performance with particles
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
@@ -58,22 +68,130 @@ function init() {
     controls.target.set(0, 1.6, 0);
     controls.update();
 
-    // Create the "Trippy Room"
-    // We use a large inverted box to project the raymarching shader onto
-    const geometry = new THREE.BoxGeometry(20, 20, 20);
-    // Invert geometry so we see inside
-    geometry.scale(-1, 1, 1);
+    // Init GPU Simulation
+    initComputeRenderer();
     
-    const material = new THREE.ShaderMaterial({
-        vertexShader: vertexShader,
-        fragmentShader: fragmentShader,
-        uniforms: uniforms,
-        side: THREE.DoubleSide
+    // Init Visual Particles
+    initParticles();
+
+    // Setup Audio
+    setupAudio();
+
+    // Controllers & Hands
+    setupXR();
+
+    // Resize Listener
+    window.addEventListener('resize', onWindowResize);
+    
+    // Start Overlay
+    document.getElementById('start-btn').addEventListener('click', () => {
+        document.getElementById('overlay').style.opacity = 0;
+        setTimeout(() => {
+            document.getElementById('overlay').style.display = 'none';
+        }, 1000);
+        
+        // Init Audio on user gesture
+        if(audioContext && audioContext.state === 'suspended') {
+            audioContext.resume();
+        }
+        playAudio();
     });
-    
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(0, 1.6, 0); // Center around typical VR head height
-    scene.add(mesh);
+}
+
+function initComputeRenderer() {
+    gpuCompute = new GPUComputationRenderer(WIDTH, WIDTH, renderer);
+
+    const dtPosition = gpuCompute.createTexture();
+    const dtVelocity = gpuCompute.createTexture();
+
+    fillTexture(dtPosition, dtVelocity);
+
+    velocityVariable = gpuCompute.addVariable("textureVelocity", computeShaderVelocity, dtVelocity);
+    positionVariable = gpuCompute.addVariable("texturePosition", computeShaderPosition, dtPosition);
+
+    gpuCompute.setVariableDependencies(velocityVariable, [positionVariable, velocityVariable]);
+    gpuCompute.setVariableDependencies(positionVariable, [positionVariable, velocityVariable]);
+
+    // Uniforms for Velocity Shader
+    velocityVariable.material.uniforms["uTime"] = { value: 0.0 };
+    velocityVariable.material.uniforms["delta"] = { value: 0.0 };
+    velocityVariable.material.uniforms["uHandPos1"] = { value: new THREE.Vector3() };
+    velocityVariable.material.uniforms["uHandPos2"] = { value: new THREE.Vector3() };
+    velocityVariable.material.uniforms["uHandVel1"] = { value: new THREE.Vector3() };
+    velocityVariable.material.uniforms["uHandVel2"] = { value: new THREE.Vector3() };
+    velocityVariable.material.uniforms["uHandActive1"] = { value: 0 };
+    velocityVariable.material.uniforms["uHandActive2"] = { value: 0 };
+
+    // Uniforms for Position Shader
+    positionVariable.material.uniforms["delta"] = { value: 0.0 };
+
+    const error = gpuCompute.init();
+    if (error !== null) {
+        console.error(error);
+    }
+}
+
+function fillTexture(texturePosition, textureVelocity) {
+    const posArray = texturePosition.image.data;
+    const velArray = textureVelocity.image.data;
+
+    for (let k = 0, kl = posArray.length; k < kl; k += 4) {
+        // Random positions in a box
+        posArray[k + 0] = (Math.random() * 4 - 2);
+        posArray[k + 1] = (Math.random() * 4 - 2) + 1.6; // Centered at head height
+        posArray[k + 2] = (Math.random() * 4 - 2);
+        posArray[k + 3] = 1;
+
+        velArray[k + 0] = 0;
+        velArray[k + 1] = 0;
+        velArray[k + 2] = 0;
+        velArray[k + 3] = 1;
+    }
+}
+
+function initParticles() {
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(WIDTH * WIDTH * 3);
+    const references = new Float32Array(WIDTH * WIDTH * 2);
+
+    let p = 0;
+    for (let i = 0; i < WIDTH * WIDTH; i++) {
+        // Position isn't used directly, but Three.js needs bounding box
+        positions[p * 3 + 0] = 0;
+        positions[p * 3 + 1] = 0;
+        positions[p * 3 + 2] = 0;
+
+        const xx = (i % WIDTH) / WIDTH;
+        const yy = Math.floor(i / WIDTH) / WIDTH;
+        
+        references[p * 2 + 0] = xx;
+        references[p * 2 + 1] = yy;
+        
+        p++;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('reference', new THREE.BufferAttribute(references, 2));
+
+    particleUniforms = {
+        texturePosition: { value: null },
+        textureVelocity: { value: null },
+        uTime: { value: 1.0 }
+    };
+
+    const material = new THREE.ShaderMaterial({
+        uniforms: particleUniforms,
+        vertexShader: renderVertexShader,
+        fragmentShader: renderFragmentShader,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    particles.frustumCulled = false; // Important because bounds are static
+    scene.add(particles);
+}
 
     // Setup Audio
     setupAudio();
@@ -163,40 +281,53 @@ function onWindowResize() {
     uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 }
 
-function updateHandData() {
-    // Check if hands are active/visible
-    // hand1.visible is true if tracking, but let's check input source
-    
-    // We try to find the index finger tip
-    
+function updateHandData(delta) {
+    // Hand 1
     if (hand1 && hand1.visible && hand1.joints && hand1.joints['index-finger-tip']) {
         const joint = hand1.joints['index-finger-tip'];
-        // The joint is an Object3D, getWorldPosition gives us the vector
         const pos = new THREE.Vector3();
         joint.getWorldPosition(pos);
-        uniforms.uHandPos1.value.copy(pos);
-        uniforms.uHandActive1.value = 1.0;
+        
+        handData.pos1.copy(pos);
+        handData.active1 = 1.0;
+    } else if (controller1 && controller1.visible) {
+        handData.pos1.copy(controller1.position);
+        handData.active1 = 1.0;
     } else {
-        uniforms.uHandActive1.value = 0.0;
-        // Fallback to controller position if hand not tracked but controller is
-        if(controller1 && controller1.visible) {
-             uniforms.uHandPos1.value.copy(controller1.position);
-             uniforms.uHandActive1.value = 1.0;
-        }
+        handData.active1 = 0.0;
     }
 
+    // Calculate Velocity 1
+    if (handData.active1 > 0.5) {
+        handData.vel1.subVectors(handData.pos1, handData.lastPos1).divideScalar(delta || 0.016);
+        handData.lastPos1.copy(handData.pos1);
+    } else {
+        handData.vel1.set(0,0,0);
+        handData.lastPos1.set(100,100,100);
+    }
+
+    // Hand 2
     if (hand2 && hand2.visible && hand2.joints && hand2.joints['index-finger-tip']) {
         const joint = hand2.joints['index-finger-tip'];
         const pos = new THREE.Vector3();
         joint.getWorldPosition(pos);
-        uniforms.uHandPos2.value.copy(pos);
-        uniforms.uHandActive2.value = 1.0;
+        
+        handData.pos2.copy(pos);
+        handData.active2 = 1.0;
+    } else if (controller2 && controller2.visible) {
+        handData.pos2.copy(controller2.position);
+        handData.active2 = 1.0;
     } else {
-        uniforms.uHandActive2.value = 0.0;
-         if(controller2 && controller2.visible) {
-             uniforms.uHandPos2.value.copy(controller2.position);
-             uniforms.uHandActive2.value = 1.0;
-        }
+        handData.active2 = 0.0;
+    }
+
+    // Calculate Velocity 2
+    if (handData.active2 > 0.5) {
+        handData.vel2.subVectors(handData.pos2, handData.lastPos2).divideScalar(delta || 0.016);
+        handData.lastPos2.copy(handData.pos2);
+    } else {
+        handData.vel2.set(0,0,0);
+        handData.lastPos2.set(100,100,100);
     }
 }
 
@@ -208,13 +339,12 @@ window.addEventListener( 'mousemove', ( event ) => {
 	mouse.x = ( event.clientX / window.innerWidth ) * 2 - 1;
 	mouse.y = - ( event.clientY / window.innerHeight ) * 2 + 1;
     
-    // If not in VR, we can simulate one hand with mouse
     if(!renderer.xr.isPresenting) {
         raycaster.setFromCamera( mouse, camera );
-        // Just project out 1.5 units
         const pt = raycaster.ray.at(1.5, new THREE.Vector3());
-        uniforms.uHandPos1.value.copy(pt);
-        uniforms.uHandActive1.value = 1.0;
+        
+        handData.pos1.copy(pt);
+        handData.active1 = 1.0;
     }
 });
 
@@ -224,13 +354,32 @@ function animate() {
 
 function render() {
     const time = performance.now() * 0.001;
-    uniforms.uTime.value = time;
-    
-    // Update Camera Position Uniform (Head tracking)
-    // In VR, the camera position is automatically updated by WebXR
-    uniforms.uCameraPos.value.copy(camera.position);
+    const delta = Math.min(time - lastTime, 0.05); // Cap delta to avoid explosion on lag
+    lastTime = time;
 
-    updateHandData();
+    updateHandData(delta);
+
+    // Update GPU Compute Uniforms
+    if(velocityVariable && positionVariable) {
+        velocityVariable.material.uniforms.uTime.value = time;
+        velocityVariable.material.uniforms.delta.value = delta;
+        velocityVariable.material.uniforms.uHandPos1.value.copy(handData.pos1);
+        velocityVariable.material.uniforms.uHandPos2.value.copy(handData.pos2);
+        velocityVariable.material.uniforms.uHandVel1.value.copy(handData.vel1);
+        velocityVariable.material.uniforms.uHandVel2.value.copy(handData.vel2);
+        velocityVariable.material.uniforms.uHandActive1.value = handData.active1;
+        velocityVariable.material.uniforms.uHandActive2.value = handData.active2;
+        
+        positionVariable.material.uniforms.delta.value = delta;
+
+        // Run Compute
+        gpuCompute.compute();
+
+        // Update Render Material with new Textures
+        particleUniforms.texturePosition.value = gpuCompute.getCurrentRenderTarget(positionVariable).texture;
+        particleUniforms.textureVelocity.value = gpuCompute.getCurrentRenderTarget(velocityVariable).texture;
+        particleUniforms.uTime.value = time;
+    }
     
     renderer.render(scene, camera);
 }
