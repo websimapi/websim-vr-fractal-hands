@@ -40,7 +40,7 @@ void main() {
     gl_Position = projectionMatrix * mvPosition;
     
     // Size attenuation - larger for lower particle count
-    gl_PointSize = ( 0.6 / -mvPosition.z ) * 500.0;
+    gl_PointSize = ( 0.5 / -mvPosition.z ) * 280.0;
 }
 `;
 
@@ -165,15 +165,15 @@ float snoise(vec3 v) {
 }
 
 vec3 curlNoise(vec3 p) {
-    const float e = 0.1;
-    float n1 = snoise(vec3(p.x, p.y + e, p.z));
-    float n2 = snoise(vec3(p.x, p.y - e, p.z));
-    float n3 = snoise(vec3(p.x, p.y, p.z + e));
-    float n4 = snoise(vec3(p.x, p.y, p.z - e));
-    float n5 = snoise(vec3(p.x + e, p.y, p.z));
-    float n6 = snoise(vec3(p.x - e, p.y, p.z));
-    
-    return vec3(n4 - n3, n6 - n5, n2 - n1); // Rotated
+    // Cheaper curl-like field: single-sample derivatives
+    const float e = 0.15;
+    float n1 = snoise(p + vec3(0.0, e, 0.0));
+    float n2 = snoise(p - vec3(0.0, e, 0.0));
+    float n3 = snoise(p + vec3(0.0, 0.0, e));
+    float n4 = snoise(p - vec3(0.0, 0.0, e));
+    float n5 = snoise(p + vec3(e, 0.0, 0.0));
+    float n6 = snoise(p - vec3(e, 0.0, 0.0));
+    return vec3(n4 - n3, n6 - n5, n2 - n1);
 }
 
 void main() {
@@ -181,20 +181,12 @@ void main() {
     vec3 pos = texture2D( texturePosition, uv ).xyz;
     vec3 vel = texture2D( textureVelocity, uv ).xyz;
 
-    // Fractal Curl Noise (FBM)
-    vec3 noise = vec3(0.0);
-    float freq = 0.3;
-    float amp = 0.5;
+    // Single octave curl noise for cheaper fluid motion
+    float freq = 0.35;
+    vec3 noise = curlNoise(pos * freq + uTime * 0.12);
     
-    // 2 Octaves of Curl Noise (Reduced for performance)
-    for(int i = 0; i < 2; i++) {
-        noise += curlNoise(pos * freq + uTime * 0.1) * amp;
-        freq *= 2.0;
-        amp *= 0.5;
-    }
-    
-    // Apply noise force
-    vel += noise * 0.8 * delta;
+    // Apply noise force (reduced strength)
+    vel += noise * 0.55 * delta;
 
     // Damping
     vel *= 0.96; 
